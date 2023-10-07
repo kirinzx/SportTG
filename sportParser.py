@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import requests
 from datetime import datetime, timedelta
@@ -60,36 +61,45 @@ class Parser:
     def __getLink(self,date=None):
         if not date:
             date = datetime.now(tz = timezone("Europe/Moscow")).strftime('%Y-%m-%d')
-        return f'https://www.championat.com/stat/football/{date}.json'
+        try:
+            tmp = requests.get(f'https://www.championat.com/stat/football/{date}.json',headers=self.headers).json()
+            return f'https://www.championat.com/stat/football/{date}.json'
+        except:
+            try:
+                tmp = requests.get(f'https://www.championat.com/stat/data/{date}/football',headers=self.headers).json()
+                return f'https://www.championat.com/stat/data/{date}/football'
+            except Exception as e:
+                print(f"Error!{e}")
+                return None
     
     def __parsing(self):
         url = self.__getLink()
         response = requests.get(url,headers=self.headers)
-        jsonResponse = response.json()
-        tournaments = jsonResponse['matches']['football']['tournaments']
+        if response: 
+            jsonResponse = response.json()
 
-        for tournament,details in tournaments.items():
-            matches = details['matches']
-            for match in matches:
-                if match['flags']['important'] == 1 and match['flags']['has_text_online'] == 1:
-                    # and match['status']['label'] == 'dns'
-                    teams = [team['name'] for team in match['teams']]
-                    
-                    if self.teamName in teams:
-                        date = match["time_str"]
-                        id = match['id']
-                        nameToChange = f'СМОТРЕТЬ {teams[0].upper()} - {teams[1].upper()} Онлайн Прямая Трансляция'
-                        date_obj = datetime.strptime(date, '%d.%m.%Y %H:%M')
+            tournaments = jsonResponse['matches']['football']['tournaments']
+
+            for tournament,details in tournaments.items():
+                matches = details['matches']
+                for match in matches:
+                    if match['flags']['important'] == 1 and match['flags']['has_text_online'] == 1 and match['status']['label'] == 'dns':
+                        teams = [team['name'] for team in match['teams']]
                         
-                        date_obj = date_obj - timedelta(minutes=float(self.__getSetting('timeToChange')))
-                        if not id in self.matches:
-                            self.__checkForDateChanges(nameToChange,date_obj,id,f'{teams[0].title()} - {teams[1].title()}')
+                        if self.teamName in teams:
+                            date = match["time_str"]
+                            id = match['id']
+                            nameToChange = f'СМОТРЕТЬ {teams[0].upper()} - {teams[1].upper()} Онлайн Прямая Трансляция'
+                            date_obj = datetime.strptime(date, '%d.%m.%Y %H:%M')
+                            
+                            date_obj = date_obj - timedelta(minutes=float(self.__getSetting('timeToChange')))
+                            if not id in self.matches:
+                                self.__checkForDateChanges(nameToChange,date_obj,id,f'{teams[0].title()} - {teams[1].title()}')
                         
 
     def __checkForDateChanges(self,nameToChange,date,id,teams):
         self.matches.append(id)
         tz = timezone('Europe/Moscow')
-        self.__changeName(nameToChange,id,teams)
         self.scheduler.add_job(self.__changeName, DateTrigger(run_date=date,timezone=tz),args=(nameToChange,id,teams),name=nameToChange)
 
     def __changeName(self,nameToChange,id=None,teams=None):
@@ -97,14 +107,22 @@ class Parser:
             self.matches.remove(id)
         async def change():
             try:
+                
                 await bot.set_chat_title(chat_id=self.channelId,title=nameToChange)
                 updates: List[types.Update] = await bot.get_updates(limit=1)
-                nameChanged = updates[-1]
+                while True:
+                    try:
+                        nameChanged = updates[-1]
+                        break
+                    except:
+                        pass
                 await bot.delete_message(self.channelId,nameChanged.channel_post.message_id)
+                
                 if teams:
                     text = self.__getSetting('post').replace('$$',teams)
                     if text:
-                        await bot.send_message(chat_id=self.channelId,text=text,parse_mode='HTML')
+                        await bot.send_message(chat_id=self.channelId,text=text,parse_mode='HTML',disable_web_page_preview=True)
+                
                 
             except Exception as e:
                 print(f'Error in {self.channelId}! {e}')
@@ -158,5 +176,4 @@ class Parser:
 channelsWorking : List[Parser] = []
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
-
 dp = Dispatcher(bot=bot,storage=storage)

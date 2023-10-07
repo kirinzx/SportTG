@@ -1,4 +1,5 @@
-from aiogram import Dispatcher, executor, types
+import threading
+from aiogram import Dispatcher, executor, types, Bot
 from aiogram.dispatcher.filters import Text
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
@@ -33,6 +34,8 @@ async def start(message: types.Message):
     timeToChange = config.get('Settings','timeToChange')
     text = config.get('Settings','post')
     await message.answer(text=f"Выберите опцию. Выставленное время для переименовывания канала = {timeToChange} минут. Ваш пост выглядит так:\n{text}", reply_markup=keyboardMain,parse_mode='HTML')
+
+
 
 @dp.message_handler(Text(equals='Отменить'), state='*')
 async def cancel_handler(message: types.Message, state: FSMContext):
@@ -241,11 +244,11 @@ async def process_channelId(message: types.Message, state: FSMContext):
         async with state.proxy() as data:
             teamName = data['teamName']
             defaultName = data['defaultName']
-            channelId = message.forward_from_chat.id
+            channelId = str(message.forward_from_chat.id)
         async with aiosqlite.connect('bot.db')as db:
             await db.execute('INSERT INTO channels(teamName,defaultName,channelID) VALUES(?,?,?);',(teamName, defaultName, channelId))
             await db.commit()
-        tmp = Parser(teamName, defaultName,channelId,asyncio.get_event_loop())
+        Parser(teamName, defaultName,channelId,asyncio.get_event_loop())
         await message.answer(text='Готово!',reply_markup=keyboardMain)
     except aiosqlite.IntegrityError:
         await message.answer(text='Канал с таким id уже зарегистрирован!',reply_markup=keyboardMain)
@@ -262,12 +265,13 @@ async def changeTimeToChange(message: types.Message):
 @dp.message_handler(state=TimeToChangeForm.timeToChange)
 async def process_timeToChange(message: types.Message, state: FSMContext):
     value = message.text.strip()
-    await state.finish()
+    
     if value.isdigit():
         setSetting('timeToChange', value)
         await message.answer(text='Готово!',reply_markup=keyboardMain)
     else:
         await message.answer(text='Время должно быть числом!',reply_markup=keyboardMain)
+    await state.finish()
     
 
 @dp.message_handler(Text(equals='Изменить шаблон для поста'))
@@ -275,24 +279,33 @@ async def changePost(message: types.Message):
     await PostForm.post.set()
     await message.answer(text='Напишите желаемый шаблон для поста. Напишите $$ там, где нужно будет написать названия команд. Например, Смотреть $$. В итоге это получится: Смотреть Барселона - Ювентус(команды выбраны для примера)',reply_markup=keyboardCancel)
 
-@dp.message_handler(state=PostForm.post)
+@dp.message_handler(state=PostForm.post,content_types=types.ContentType.all())
 async def process_post(message: types.Message, state: FSMContext):
     
-    await state.finish()
+    
     if not '$$' in message.text.strip():
         await message.answer(text='Ошибка!Отсутствуют знаки $$',reply_markup=keyboardMain)
     else:
         try:
-            setSetting('post',message.html_text)
+            config = configparser.ConfigParser()
+            config.read('settings.ini', encoding="utf-8")
+            if config.has_option('Settings','post'):
+                setSetting('post',message.html_text)
+            else:
+                config['Settings']['post'] = message.html_text
+                with open('settings.ini','w',encoding='utf-8')as config_file:
+                    config.write(config_file)
             await message.answer(text='Готово!',reply_markup=keyboardMain)
-        except:
+        except Exception as e:
             await message.answer(text="Непридвиденная ошибка",reply_markup=keyboardMain)
+            print(f"Error!{e}")
+    await state.finish()
 
 def setSetting(setting, value):
     config = configparser.ConfigParser()
     config.read('settings.ini', encoding="utf-8")
     config.set('Settings',setting, value)
-    with open('settings.ini','w')as config_file:
+    with open('settings.ini','w',encoding='utf-8')as config_file:
         config.write(config_file)
 
 def main(loop):
