@@ -11,21 +11,27 @@ import configparser
 from middlewares import AdminMiddleware
 from states import *
 from paginator import Paginator
-from sportParser import Parser, channelsWorking, bot, dp
+from sportParser import Parser, bot, dp
 import io
 
 keyboardCancel = ReplyKeyboardMarkup(keyboard=[
     ["Отменить"],
 ])
 
+keyboardSettings = ReplyKeyboardMarkup(keyboard=[
+    ["Изменить время для переименовывания","Изменить шаблон для поста"],
+    ['Изменить видео для поста'],['Изменить прокси'],
+    ['Назад']
+])
+
 keyboardMain = ReplyKeyboardMarkup(keyboard=[
     ['Добавить "админа"',"Добавить канал"],
-    ["Как я работаю?"],
-    ["Изменить время для переименовывания","Изменить шаблон для поста"],
+    ["Как я работаю?",'Настройки'],
     ['Посмотреть "админов"',"Посмотреть добавленные каналы"],
 ],resize_keyboard=True)
 
 channelId = ''
+sportParser: Parser|None = None
 
 @dp.message_handler(commands="start")
 async def start(message: types.Message):
@@ -35,7 +41,13 @@ async def start(message: types.Message):
     text = config.get('Settings','post')
     await message.answer(text=f"Выберите опцию. Выставленное время для переименовывания канала = {timeToChange} минут. Ваш пост выглядит так:\n{text}", reply_markup=keyboardMain,parse_mode='HTML')
 
+@dp.message_handler(Text(equals='Назад'))
+async def getBack(message: types.Message):
+    await message.answer(text="Выберите опцию",reply_markup=keyboardMain)
 
+@dp.message_handler(Text(equals='Настройки'))
+async def get_settings(message: types.Message):
+    await message.answer(text='Выберите опцию',reply_markup=keyboardSettings)
 
 @dp.message_handler(Text(equals='Отменить'), state='*')
 async def cancel_handler(message: types.Message, state: FSMContext):
@@ -48,6 +60,36 @@ async def cancel_handler(message: types.Message, state: FSMContext):
 @dp.message_handler(Text(equals='Как я работаю?'))
 async def getHelp_handler(message: types.Message):
     await message.answer(text='Добавите меня в канал, дайте права менять описание канала. Потом зарегистрируйте этот канал здесь, нажав на кнопку "Добавить канал". После этого я буду менять его название в заданное время по заданным критериям',reply_markup=keyboardMain)
+
+@dp.message_handler(Text(equals='Изменить видео для поста'))
+async def setVideo_handler(message: types.Message):
+    await VideoForm.video.set()
+    await message.answer(text='Пришлите желаемое видео(mp4 формат)',reply_markup=keyboardCancel)
+
+@dp.message_handler(state=VideoForm.video,content_types=types.ContentType.VIDEO)
+async def process_video(message: types.Message, state: FSMContext):
+    videoId = message.video.file_id
+    await state.finish()
+    await bot.download_file_by_id(file_id=videoId,destination='videoToSend.mp4')
+    await message.answer(text='Готово!',reply_markup=keyboardMain)
+
+@dp.message_handler(Text(equals='Изменить прокси'))
+async def changeProxy(message: types.Message):
+    await ProxyForm.proxy.set()
+    await message.answer(text='Напишите данные от HTTP прокси в формате логин:пароль@айпи:порт',reply_markup=keyboardCancel)
+
+@dp.message_handler(state=ProxyForm.proxy)
+async def process_proxy(message: types.Message, state: FSMContext):
+    proxy = message.text.strip()
+    await state.finish()
+    try:
+        if proxy:
+            setSetting('proxy',proxy)
+            await message.answer(text='Готово!',reply_markup=keyboardMain)
+        else:
+            await message.answer(text='Некорректно введеные данные', reply_markup=keyboardMain)
+    except:
+        await message.answer(text='Непридвиденная ошибка', reply_markup=keyboardMain)
 
 @dp.message_handler(Text(equals='Посмотреть "админов"'))
 async def getAdmins_handler(message: types.Message):
@@ -86,7 +128,7 @@ async def process_callback_deleteAdmin(callback_query: types.CallbackQuery):
 @dp.message_handler(Text(equals='Посмотреть добавленные каналы'))
 async def getChannels_handler(message: types.Message):
     async with aiosqlite.connect('bot.db')as db:
-        async with db.execute("SELECT teamName,channelID FROM channels;")as cur:
+        async with db.execute("SELECT channelID FROM channels;")as cur:
             channels = await cur.fetchall()
     if len(channels) == 0:
         await message.answer(text='Каналов нет...',reply_markup=keyboardMain)
@@ -94,54 +136,10 @@ async def getChannels_handler(message: types.Message):
         channelButtons = InlineKeyboardMarkup()
         for channel in channels:
             channelButtons.add(InlineKeyboardButton(text=f'{channel[0]}', callback_data=f"view {channel[0]}"),
-                                InlineKeyboardButton(text=f'{channel[1]}', callback_data=f"view {channel[1]}"),
-                                InlineKeyboardButton(text="Изменить", callback_data=f"change channel {channel[1]}"))
+                            InlineKeyboardButton(text="Удалить", callback_data=f"delete {channel[0]}"))
 
         paginator = Paginator(channelButtons, size=8, dp=dp)
         await message.answer(text="Добавленные каналы",reply_markup=paginator())
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('change channel'))
-async def process_callback_changeChannel(callback_query: types.CallbackQuery):
-    channelId = callback_query.data.split(' ')[-1]
-    newKeyboard = InlineKeyboardMarkup()
-    isThere = False
-    for channel in channelsWorking:
-        if channel.channelId == channelId:
-            isThere = True
-            break
-    if isThere:
-        turn = InlineKeyboardButton(text='Стоп', callback_data=f'stop {channelId}')
-    else:
-        turn = InlineKeyboardButton(text='Пуск', callback_data=f'start {channelId}')
-    delete = InlineKeyboardButton(text='Удалить',callback_data=f'delete {channelId}')
-    changeTeam = InlineKeyboardButton(text='Сменить команду', callback_data=f'change team {channelId}')
-
-    newKeyboard.add(turn,delete)
-    newKeyboard.add(changeTeam)
-    await callback_query.message.edit_text(text=f'ID просматриваемого канала: {channelId}')
-    await callback_query.message.edit_reply_markup(newKeyboard)
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('stop'))
-async def process_callback_stopParsing(callback_query: types.CallbackQuery):
-    channelId = callback_query.data.split(' ')[-1]
-    for channel in channelsWorking:
-        if channel.channelId == channelId:
-            channel.stop()
-            break
-    await callback_query.message.delete()
-    await bot.send_message(chat_id=callback_query.from_user.id,text='Готово!',reply_markup=keyboardMain)
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('start'))
-async def process_callback_startParsing(callback_query: types.CallbackQuery):
-    channelId = callback_query.data.split(' ')[-1]
-    async with aiosqlite.connect('bot.db')as db:
-        async with db.execute(f'SELECT teamName, defaultName FROM channels WHERE channelId = {channelId};')as cur:
-            data = await cur.fetchone()
-
-        tmp = Parser(data[0], data[1], channelId,asyncio.get_event_loop())
-
-    await callback_query.message.delete()
-    await bot.send_message(chat_id=callback_query.from_user.id,text='Готово!',reply_markup=keyboardMain)
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('delete'))
 async def process_callback_deleteChannel(callback_query: types.CallbackQuery):
@@ -151,39 +149,13 @@ async def process_callback_deleteChannel(callback_query: types.CallbackQuery):
         await db.execute(f'DELETE FROM channels WHERE channelId = {channelId};')
         await db.commit()
 
-    for channel in channelsWorking:
-        if channel.channelId == channelId:
-            channel.stop()
-            break
     await callback_query.message.delete()
-    await bot.send_message(chat_id=callback_query.from_user.id,text='Готово!',reply_markup=keyboardMain)
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('change team'))
-async def process_callback_changeTeam(callback_query: types.CallbackQuery):
-    global channelId
-    channelId = callback_query.data.split(' ')[-1]
-    await TeamNameForm.teamName.set()
-    await callback_query.message.delete()
-    await bot.send_message(chat_id=callback_query.from_user.id,text='Напишите название новой команды. Важно, чтобы название совпадало с названием на сайте https://www.championat.com/',reply_markup=keyboardCancel)
+    try:
+        sportParser.event.set()
+        await bot.send_message(chat_id=callback_query.from_user.id,text='Готово!',reply_markup=keyboardMain)
+    except Exception as e:
+        await bot.send_message(chat_id=callback_query.from_user.id,text='Непридвиденная Ошибка!',reply_markup=keyboardMain)
     
-@dp.message_handler(state=TeamNameForm.teamName)
-async def process_teamNameChange(message: types.Message, state: FSMContext):
-
-    async with aiosqlite.connect('bot.db')as db:
-        await db.execute(f'UPDATE channels SET teamName = ? WHERE channelId = ?;',(message.text.strip(),channelId))
-        async with db.execute(f'SELECT teamName, defaultName FROM channels WHERE channelId = {channelId};')as cur:
-            data = await cur.fetchone()
-        await db.commit()
-        
-
-        tmp = Parser(data[0], data[1], channelId,asyncio.get_event_loop())
-
-    for channel in channelsWorking:
-        if channel.channelId == channelId:
-            channel.stop()
-            break
-    await state.finish()
-    await message.answer(text='Готово!',reply_markup=keyboardMain)
 
 
 @dp.message_handler(Text(equals='Добавить "админа"'))
@@ -218,44 +190,35 @@ async def process_adminId(message:types.Message,state:FSMContext):
 
 @dp.message_handler(Text(equals='Добавить канал'))
 async def addChannel_handler(message: types.Message):
-    await ChannelForm.teamName.set()
-    await message.answer(text="Напишите, к какой команде привязать канал. Важно, чтобы название команды было таким же, как на сайте https://www.championat.com/",reply_markup=keyboardCancel)
-
-@dp.message_handler(state=ChannelForm.teamName)
-async def process_teamName(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        data['teamName'] = message.text.strip()
-    await ChannelForm.next()
-    await message.answer(
-        text='Напишите, на что менять название канала после окончания матча.',reply_markup=keyboardCancel
-    )
+    await ChannelForm.channelId.set()
+    await message.answer(text="Перешлите любой пост из канала",reply_markup=keyboardCancel)
 
 @dp.message_handler(state=ChannelForm.defaultName)
 async def process_defaultName(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        data['defaultName'] = message.text.strip()
-    await ChannelForm.next()
-    await message.answer(text='Перешлите любой пост из канала',reply_markup=keyboardCancel)
+    try:
+        async with state.proxy() as data:
+            async with aiosqlite.connect('bot.db')as db:
+                await db.execute('INSERT INTO channels(channelID, defaultName) VALUES(?,?);',(data['channelId'], message.text.strip()))
+                await db.commit()
+        sportParser.event.set()
+        await message.answer(text='Готово!',reply_markup=keyboardMain)
+    except aiosqlite.IntegrityError:
+        await message.answer(text='Канал с таким id уже зарегистрирован!',reply_markup=keyboardMain)
+    except Exception as e:
+        await message.answer(text='Непридвиденная ошибка!',reply_markup=keyboardMain)
+    finally:
+        await state.finish()
 
 @dp.message_handler(state=ChannelForm.channelId,content_types=types.ContentType.all())
 async def process_channelId(message: types.Message, state: FSMContext):
     
     try:
         async with state.proxy() as data:
-            teamName = data['teamName']
-            defaultName = data['defaultName']
-            channelId = str(message.forward_from_chat.id)
-        async with aiosqlite.connect('bot.db')as db:
-            await db.execute('INSERT INTO channels(teamName,defaultName,channelID) VALUES(?,?,?);',(teamName, defaultName, channelId))
-            await db.commit()
-        Parser(teamName, defaultName,channelId,asyncio.get_event_loop())
-        await message.answer(text='Готово!',reply_markup=keyboardMain)
-    except aiosqlite.IntegrityError:
-        await message.answer(text='Канал с таким id уже зарегистрирован!',reply_markup=keyboardMain)
+            data['channelId'] = str(message.forward_from_chat.id)
+            await ChannelForm.next()
+        await message.answer(text='Напишите название канала, которое бот должен выставлять после завершения матча',reply_markup=keyboardCancel)
     except AttributeError:
         await message.answer(text='Ошибка! Что-то с вашим пересланным сообщением...',reply_markup=keyboardMain)
-    finally:
-        await state.finish()
 
 @dp.message_handler(Text(equals='Изменить время для переименовывания'))
 async def changeTimeToChange(message: types.Message):
@@ -308,7 +271,13 @@ def setSetting(setting, value):
     with open('settings.ini','w',encoding='utf-8')as config_file:
         config.write(config_file)
 
-def main(loop):
+def main(loop, parser: Parser):
+    global sportParser
+    sportParser = parser
     asyncio.set_event_loop(loop)
     dp.middleware.setup(AdminMiddleware())
-    executor.start_polling(dp, skip_updates=True,loop=loop)
+    while True:
+        try:
+            executor.start_polling(dp, skip_updates=True,loop=loop)
+        except:
+            pass

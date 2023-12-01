@@ -15,7 +15,7 @@ class AdminMiddleware(BaseMiddleware):
         await self.checkForAdmin(str(query.from_user.id))
 
 
-    async def checkForAdmin(self, userId: int):
+    async def checkForAdmin(self, userId: str):
         async with aiosqlite.connect("bot.db") as db:
             async with db.execute("SELECT adminId FROM admins") as cur:
                 admins = [admin[0] for admin in await cur.fetchall()]

@@ -5,15 +5,17 @@ class AdminForm(StatesGroup):
     adminId = State()
 
 class ChannelForm(StatesGroup):
-    teamName = State()
-    defaultName = State()
     channelId = State()
-
-class TeamNameForm(StatesGroup):
-    teamName = State()
+    defaultName = State()
 
 class TimeToChangeForm(StatesGroup):
     timeToChange = State()
 
 class PostForm(StatesGroup):
     post = State()
+
+class VideoForm(StatesGroup):
+    video = State()
+
+class ProxyForm(StatesGroup):
+    proxy = State()

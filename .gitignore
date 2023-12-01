@@ -6,6 +6,7 @@ __pycache__/
 
 bot.db
 config.py
+settings.ini
 
 # C extensions
 *.so
